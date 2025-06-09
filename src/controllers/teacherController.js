@@ -1,7 +1,8 @@
 const Teacher = require('../models/Teacher');
 const User = require('../models/User');
+const TeacherPosition = require('../models/TeacherPosition');
 
-// Hàm chuyển đổi _id thành chuỗi cho toàn bộ object
+// Helper function to convert MongoDB _id to string id
 const convertIdToString = (obj) => {
   if (!obj) return obj;
   
@@ -10,154 +11,29 @@ const convertIdToString = (obj) => {
     converted.id = converted._id.toString();
     delete converted._id;
   }
-  
-  // Chuyển đổi các trường tham chiếu
-  if (converted.userId && typeof converted.userId === 'object') {
-    converted.userId = {
-      ...converted.userId,
-      id: converted.userId._id ? converted.userId._id.toString() : null
-    };
-    if (converted.userId._id) delete converted.userId._id;
-  }
-
-  if (Array.isArray(converted.teacherPositionsId)) {
-    converted.teacherPositionsId = converted.teacherPositionsId.map(pos => 
-      typeof pos === 'object' && pos._id ? pos._id.toString() : pos
-    );
-  }
-
-  if (Array.isArray(converted.degrees)) {
-    converted.degrees = converted.degrees.map(degree => {
-      if (degree && degree._id) {
-        const degreeObj = { ...degree };
-        degreeObj.id = degree._id.toString();
-        delete degreeObj._id;
-        return degreeObj;
-      }
-      return degree;
-    });
-  }
-
   return converted;
 };
 
-// Get all teachers with pagination
+// Get all teachers
 exports.getTeachers = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const skip = (page - 1) * limit;
-
-    // First, get all active teachers
-    const query = { isDeleted: false };
-
-    // Get total count first
-    const total = await Teacher.countDocuments(query);
-
-    // Then get paginated data with populated fields
-    const teachers = await Teacher.find(query)
-      .populate({
-        path: 'userId',
-        select: 'name email phoneNumber address identity dob',
-        match: { isDeleted: false }
-      })
-      .populate({
-        path: 'teacherPositions',
-        select: 'name code des',
-        match: { isDeleted: false }
-      })
-      .sort({ createdAt: -1 }) // Sort by newest first
-      .skip(skip)
-      .limit(limit)
-      .lean();
-
-    // Format response data
-    const formattedTeachers = teachers.map(teacher => ({
-      code: teacher.code,
-      name: teacher.userId?.name,
-      email: teacher.userId?.email,
-      phoneNumber: teacher.userId?.phoneNumber,
-      address: teacher.userId?.address,
-      identity: teacher.userId?.identity,
-      dob: teacher.userId?.dob,
-      isActive: teacher.isActive,
-      positions: teacher.teacherPositions?.map(pos => ({
-        code: pos.code,
-        name: pos.name,
-        description: pos.des
-      })),
-      degrees: teacher.degrees?.map(degree => ({
-        type: degree.name,
-        school: degree.institution,
-        graduationYear: degree.graduationYear
-      }))
-    }));
-
-    // Calculate pagination values
-    const totalPages = Math.ceil(total / limit);
-    const hasNextPage = page < totalPages;
-    const hasPrevPage = page > 1;
+    const teachers = await Teacher.find({ isDeleted: false })
+      .populate('userId')
+      .populate('teacherPositions');
+    
+    const convertedTeachers = teachers.map(teacher => {
+      const teacherObj = teacher.toObject();
+      return convertIdToString(teacherObj);
+    });
 
     res.json({
       success: true,
-      data: formattedTeachers,
-      pagination: {
-        currentPage: page,
-        totalPages,
-        totalItems: total,
-        itemsPerPage: limit,
-        hasNextPage,
-        hasPrevPage
-      }
+      data: convertedTeachers
     });
   } catch (error) {
-    console.error('Error in getTeachers:', error);
     res.status(500).json({
       success: false,
       message: 'Error fetching teachers',
-      error: error.message
-    });
-  }
-};
-
-// Create new teacher
-exports.createTeacher = async (req, res) => {
-  try {
-    const { user: userData, ...teacherData } = req.body;
-
-    // Create user first
-    const user = new User(userData);
-    await user.save();
-
-    // Create teacher with reference to user
-    const teacher = new Teacher({
-      ...teacherData,
-      userId: user._id
-    });
-    await teacher.save();
-
-    // Populate references and convert to object
-    await teacher.populate('userId');
-    await teacher.populate('teacherPositionsId');
-
-    // Chuyển đổi _id thành chuỗi
-    const convertedTeacher = convertIdToString(teacher.toObject());
-
-    res.status(201).json({
-      success: true,
-      data: convertedTeacher
-    });
-  } catch (error) {
-    console.error('Error in createTeacher:', error);
-    
-    // If user was created but teacher creation failed, delete the user
-    if (error.userId) {
-      await User.findByIdAndDelete(error.userId);
-    }
-
-    res.status(400).json({
-      success: false,
-      message: 'Error creating teacher',
       error: error.message
     });
   }
@@ -168,8 +44,8 @@ exports.getTeacherById = async (req, res) => {
   try {
     const teacher = await Teacher.findById(req.params.id)
       .populate('userId')
-      .populate('teacherPositionsId');
-
+      .populate('teacherPositions');
+    
     if (!teacher) {
       return res.status(404).json({
         success: false,
@@ -177,7 +53,6 @@ exports.getTeacherById = async (req, res) => {
       });
     }
 
-    // Chuyển đổi _id thành chuỗi
     const convertedTeacher = convertIdToString(teacher.toObject());
 
     res.json({
@@ -188,6 +63,143 @@ exports.getTeacherById = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error fetching teacher',
+      error: error.message
+    });
+  }
+};
+
+// Create new teacher
+exports.createTeacher = async (req, res) => {
+  try {
+    // Create user first
+    const user = new User({
+      ...req.body.user,
+      role: 'TEACHER'
+    });
+    await user.save();
+
+    // Create teacher with user reference
+    const teacher = new Teacher({
+      userId: user._id,
+      code: req.body.code,
+      startDate: req.body.startDate,
+      teacherPositions: req.body.teacherPositions,
+      degrees: req.body.degrees,
+      isActive: true
+    });
+    await teacher.save();
+
+    // Populate the teacher data
+    await teacher.populate('userId');
+    await teacher.populate('teacherPositions');
+
+    const convertedTeacher = convertIdToString(teacher.toObject());
+
+    res.status(201).json({
+      success: true,
+      data: convertedTeacher
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: 'Error creating teacher',
+      error: error.message
+    });
+  }
+};
+
+// Delete teacher
+exports.deleteTeacher = async (req, res) => {
+  try {
+    const teacher = await Teacher.findById(req.params.id);
+    
+    if (!teacher) {
+      return res.status(404).json({
+        success: false,
+        message: 'Teacher not found'
+      });
+    }
+
+    // Soft delete
+    teacher.isDeleted = true;
+    await teacher.save();
+
+    res.json({
+      success: true,
+      message: 'Teacher deleted successfully'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Error deleting teacher',
+      error: error.message
+    });
+  }
+};
+
+// Lấy tất cả vị trí (chưa bị xóa)
+exports.getPositions = async (req, res) => {
+  try {
+    const positions = await TeacherPosition.find({ isDeleted: false });
+    
+    const convertedPositions = positions.map(pos => convertIdToString(pos.toObject()));
+
+    res.json({
+      success: true,
+      data: convertedPositions
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching positions',
+      error: error.message
+    });
+  }
+};
+
+// Tạo vị trí mới
+exports.createPosition = async (req, res) => {
+  try {
+    const position = new TeacherPosition(req.body);
+    await position.save();
+
+    const convertedPosition = convertIdToString(position.toObject());
+
+    res.status(201).json({
+      success: true,
+      data: convertedPosition
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: 'Error creating position',
+      error: error.message
+    });
+  }
+};
+
+// Lấy vị trí theo ID
+exports.getPositionById = async (req, res) => {
+  try {
+    const position = await TeacherPosition.findById(req.params.id);
+    
+    if (!position) {
+      return res.status(404).json({
+        success: false,
+        message: 'Position not found'
+      });
+    }
+
+    const convertedPosition = convertIdToString(position.toObject());
+
+    res.json({
+      success: true,
+      data: convertedPosition
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching position',
       error: error.message
     });
   }

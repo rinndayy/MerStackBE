@@ -2,30 +2,11 @@ const mongoose = require('mongoose');
 
 const connectDB = async () => {
   try {
-    const uri = process.env.MONGODB_URI; // Lưu URI vào .env
-    await mongoose.connect(uri, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true
-    });
-
-    console.log('✅ Connected to MongoDB Atlas');
-
-    mongoose.connection.on('connected', () => {
-      console.log('Mongoose connected');
-    });
-
-    mongoose.connection.on('error', (err) => {
-      console.error('❌ Mongoose connection error:', err);
-    });
-
-    process.on('SIGINT', async () => {
-      await mongoose.connection.close();
-      console.log('Mongoose disconnected on app termination');
-      process.exit(0);
-    });
-
+    console.log('Connecting to:', process.env.MONGO_URI); // debug
+    const conn = await mongoose.connect(process.env.MONGO_URI); // ✅ không cần tùy chọn cũ
+    console.log(`MongoDB Connected: ${conn.connection.host}`);
   } catch (error) {
-    console.error('❌ Error connecting to MongoDB Atlas:', error.message);
+    console.error(`MongoDB connection error: ${error.message}`);
     process.exit(1);
   }
 };
